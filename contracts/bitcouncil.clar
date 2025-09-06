@@ -362,3 +362,84 @@
     )
   )
 )
+
+;; Validate governance parameter constraints
+(define-private (validate-parameters (params {
+  proposal-fee: uint,
+  min-proposal-amount: uint,
+  max-proposal-amount: uint,
+  voting-delay: uint,
+  voting-period: uint,
+  timelock-period: uint,
+  quorum-threshold: uint,
+  super-majority: uint,
+}))
+  (and
+    (< (get min-proposal-amount params) (get max-proposal-amount params))
+    (<= (get quorum-threshold params) u1000)
+    (<= (get super-majority params) u1000)
+    (> (get voting-period params) (get voting-delay params))
+  )
+)
+
+;; READ-ONLY QUERY FUNCTIONS
+
+;; Retrieve member information and voting power
+(define-read-only (get-member-info (member principal))
+  (map-get? members member)
+)
+
+;; Get detailed proposal information by ID
+(define-read-only (get-proposal-by-id (proposal-id uint))
+  (map-get? proposals proposal-id)
+)
+
+;; Check individual vote record
+(define-read-only (get-vote
+    (proposal-id uint)
+    (voter principal)
+  )
+  (map-get? votes {
+    proposal-id: proposal-id,
+    voter: voter,
+  })
+)
+
+;; Retrieve delegation information
+(define-read-only (get-delegation (member principal))
+  (map-get? delegations member)
+)
+
+;; Get return pool details
+(define-read-only (get-return-pool (pool-id uint))
+  (map-get? return-pools pool-id)
+)
+
+;; Check if member has claimed returns
+(define-read-only (has-claimed
+    (member principal)
+    (pool-id uint)
+  )
+  (default-to false
+    (get claimed
+      (map-get? member-claims {
+        member: member,
+        pool-id: pool-id,
+      })
+    ))
+)
+
+;; Verify emergency administrator status
+(define-read-only (is-emergency-admin (admin principal))
+  (default-to false (map-get? emergency-admins admin))
+)
+
+;; Get current DAO governance parameters
+(define-read-only (get-dao-parameters)
+  (ok (var-get dao-parameters))
+)
+
+;; Check current treasury balance
+(define-read-only (get-treasury-balance)
+  (ok (var-get treasury-balance))
+)
