@@ -257,3 +257,108 @@
     (ok proposal-id)
   )
 )
+
+;; RETURN DISTRIBUTION SYSTEM
+
+;; Create investment return pool for executed proposal
+(define-public (create-return-pool
+    (proposal-id uint)
+    (total-amount uint)
+  )
+  (let (
+      (caller tx-sender)
+      (proposal (unwrap! (get-proposal-by-id proposal-id) ERR-PROPOSAL-NOT-ACTIVE))
+    )
+    ;; Authorization and validation checks
+    (asserts! (is-eq caller (var-get dao-admin)) ERR-NOT-AUTHORIZED)
+    (asserts! (> total-amount u0) ERR-INVALID-AMOUNT)
+    (asserts! (is-eq (get status proposal) "executed") ERR-PROPOSAL-NOT-ACTIVE)
+
+    ;; Initialize return pool
+    (map-set return-pools proposal-id {
+      total-amount: total-amount,
+      distributed-amount: u0,
+      distribution-start: stacks-block-height,
+      distribution-end: (+ stacks-block-height (get timelock-period (var-get dao-parameters))),
+      claims: (list),
+    })
+    (ok true)
+  )
+)
+
+;; Claim proportional returns from investment pool
+(define-public (claim-returns (proposal-id uint))
+  (let (
+      (caller tx-sender)
+      (pool (unwrap! (get-return-pool proposal-id) ERR-NO-RETURNS))
+      (member-info (unwrap! (get-member-info caller) ERR-NOT-AUTHORIZED))
+      (claim-amount (calculate-member-share caller proposal-id))
+    )
+    ;; Validate claim eligibility
+    (asserts! (> claim-amount u0) ERR-INVALID-AMOUNT)
+    (asserts! (not (has-claimed caller proposal-id)) ERR-ALREADY-VOTED)
+
+    ;; Record member claim
+    (map-set member-claims {
+      member: caller,
+      pool-id: proposal-id,
+    } {
+      amount: claim-amount,
+      claimed: true,
+    })
+
+    ;; Update pool distribution tracking
+    (map-set return-pools proposal-id
+      (merge pool {
+        distributed-amount: (+ (get distributed-amount pool) claim-amount),
+        claims: (unwrap! (as-max-len? (append (get claims pool) caller) u200)
+          ERR-INVALID-PARAMETER
+        ),
+      })
+    )
+
+    ;; Execute return transfer
+    (try! (stx-transfer? claim-amount (as-contract tx-sender) caller))
+    (ok true)
+  )
+)
+
+;; GOVERNANCE PARAMETER UPDATES
+
+;; Update DAO operational parameters
+(define-public (update-dao-parameters (new-params {
+  proposal-fee: uint,
+  min-proposal-amount: uint,
+  max-proposal-amount: uint,
+  voting-delay: uint,
+  voting-period: uint,
+  timelock-period: uint,
+  quorum-threshold: uint,
+  super-majority: uint,
+}))
+  (begin
+    (asserts! (is-eq tx-sender (var-get dao-admin)) ERR-NOT-AUTHORIZED)
+    (asserts! (validate-parameters new-params) ERR-INVALID-PARAMETER)
+    (var-set dao-parameters new-params)
+    (ok true)
+  )
+)
+
+;; PRIVATE HELPER FUNCTIONS
+
+;; Calculate member's proportional share of return pool
+(define-private (calculate-member-share
+    (member principal)
+    (pool-id uint)
+  )
+  (let (
+      (pool (unwrap! (get-return-pool pool-id) u0))
+      (member-info (unwrap! (get-member-info member) u0))
+      (total-shares (var-get treasury-balance))
+    )
+    (if (> total-shares u0)
+      (/ (* (get total-amount pool) (get voting-power member-info)) total-shares)
+      u0
+    )
+  )
+)
