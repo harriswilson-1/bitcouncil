@@ -121,3 +121,139 @@
   principal
   bool
 )
+
+;; Vote delegation system
+(define-map delegations
+  principal
+  {
+    delegate: principal,
+    amount: uint,
+    expiry: uint,
+  }
+)
+
+;; Investment return distribution pools
+(define-map return-pools
+  uint
+  {
+    total-amount: uint,
+    distributed-amount: uint,
+    distribution-start: uint,
+    distribution-end: uint,
+    claims: (list 200 principal),
+  }
+)
+
+;; Member return claims tracking
+(define-map member-claims
+  {
+    member: principal,
+    pool-id: uint,
+  }
+  {
+    amount: uint,
+    claimed: bool,
+  }
+)
+
+;; EMERGENCY GOVERNANCE FUNCTIONS
+
+;; Toggle emergency state for crisis management
+(define-public (set-emergency-state (state bool))
+  (begin
+    (asserts! (is-emergency-admin tx-sender) ERR-NOT-AUTHORIZED)
+    (var-set emergency-state state)
+    (ok true)
+  )
+)
+
+;; Add new emergency administrator
+(define-public (add-emergency-admin (admin principal))
+  (begin
+    (asserts! (is-eq tx-sender (var-get dao-admin)) ERR-NOT-AUTHORIZED)
+    (asserts! (not (is-eq admin (as-contract tx-sender))) ERR-INVALID-PARAMETER)
+    (map-set emergency-admins admin true)
+    (ok true)
+  )
+)
+
+;; DELEGATION SYSTEM
+
+;; Delegate voting power to another member
+(define-public (delegate-votes
+    (delegate-to principal)
+    (amount uint)
+    (expiry uint)
+  )
+  (let (
+      (caller tx-sender)
+      (member-info (unwrap! (get-member-info caller) ERR-NOT-AUTHORIZED))
+    )
+    ;; Validate delegation parameters
+    (asserts! (not (is-eq delegate-to caller)) ERR-INVALID-DELEGATE)
+    (asserts! (is-some (get-member-info delegate-to)) ERR-INVALID-DELEGATE)
+    (asserts! (>= (get voting-power member-info) amount) ERR-INSUFFICIENT-FUNDS)
+    (asserts! (> expiry stacks-block-height) ERR-INVALID-PARAMETER)
+
+    ;; Record delegation
+    (map-set delegations caller {
+      delegate: delegate-to,
+      amount: amount,
+      expiry: expiry,
+    })
+
+    ;; Update member voting power
+    (map-set members caller
+      (merge member-info { voting-power: (- (get voting-power member-info) amount) })
+    )
+    (ok true)
+  )
+)
+
+;; PROPOSAL MANAGEMENT
+
+;; Create new governance proposal with comprehensive validation
+(define-public (create-proposal
+    (title (string-ascii 100))
+    (description (string-utf8 1000))
+    (amount uint)
+    (target principal)
+  )
+  (let (
+      (caller tx-sender)
+      (current-block stacks-block-height)
+      (proposal-id (+ (var-get proposal-count) u1))
+      (params (var-get dao-parameters))
+      (end-block (+ current-block (get voting-period params)))
+    )
+    ;; Comprehensive input validation
+    (asserts! (not (is-eq target (as-contract tx-sender))) ERR-INVALID-PARAMETER)
+    (asserts! (> (len title) u0) ERR-INVALID-PARAMETER)
+    (asserts! (> (len description) u0) ERR-INVALID-PARAMETER)
+    (asserts! (is-some (get-member-info caller)) ERR-NOT-AUTHORIZED)
+    (asserts! (>= (var-get treasury-balance) amount) ERR-INSUFFICIENT-FUNDS)
+    (asserts! (>= amount (get min-proposal-amount params)) ERR-INVALID-AMOUNT)
+    (asserts! (<= amount (get max-proposal-amount params)) ERR-INVALID-AMOUNT)
+
+    ;; Collect proposal fee
+    (try! (stx-transfer? (get proposal-fee params) caller (as-contract tx-sender)))
+
+    ;; Create proposal record
+    (map-set proposals proposal-id {
+      id: proposal-id,
+      proposer: caller,
+      title: title,
+      description: description,
+      amount: amount,
+      target: target,
+      start-block: (+ current-block (get voting-delay params)),
+      end-block: end-block,
+      yes-votes: u0,
+      no-votes: u0,
+      status: "active",
+      executed: false,
+    })
+    (var-set proposal-count proposal-id)
+    (ok proposal-id)
+  )
+)
